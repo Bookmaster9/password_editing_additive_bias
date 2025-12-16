@@ -1,0 +1,560 @@
+================================================================================
+LEVEL 1: COARSE OPERATIONS (13 features)
+================================================================================
+
+These features measure basic edit statistics without semantic interpretation.
+
+---
+LENGTH METRICS
+---
+
+L1_len_original
+    Definition: len(original)
+    Type: Integer
+    Example: "Password123" → 11
+
+L1_len_modified
+    Definition: len(modified)
+    Type: Integer
+    Example: "Password123!!!" → 14
+
+L1_len_change
+    Definition: len(modified) - len(original)
+    Type: Integer (can be negative)
+    Example: 14 - 11 = +3
+    Interpretation: Positive = password got longer (additive)
+                   Negative = password got shorter (subtractive)
+                   Zero = same length (substitution or no change)
+
+L1_len_change_abs
+    Definition: abs(L1_len_change)
+    Type: Integer (always non-negative)
+    Example: abs(+3) = 3
+
+---
+EDIT DISTANCE AND SIMILARITY
+---
+
+L1_edit_distance
+    Definition: Levenshtein distance - minimum number of single-character
+                edits (insertions, deletions, substitutions) needed to
+                transform original into modified
+    Type: Integer (0 to max(len(original), len(modified)))
+    Algorithm: Dynamic programming (standard Levenshtein)
+    Example: "Password" → "P@ssw0rd"
+             Changes: a→@, o→0 = 2 edits
+             L1_edit_distance = 2
+
+L1_similarity_ratio
+    Definition: difflib.SequenceMatcher(None, original, modified).ratio()
+    Type: Float (0.0 to 1.0)
+    Formula: 2 * (number of matching characters) / (len(original) + len(modified))
+    Interpretation: 1.0 = identical strings
+                   0.0 = completely different
+                   Higher = more structural preservation
+    Example: "Password" → "P@ssword"
+             Many characters preserved in order → high ratio (e.g., 0.88)
+
+---
+CHARACTER-LEVEL OPERATIONS
+---
+
+These use Python's difflib.SequenceMatcher to align the strings and count
+different types of character changes.
+
+L1_chars_added
+    Definition: Total characters inserted into the password
+    Algorithm: Sum of all 'insert' operations from SequenceMatcher
+               + net additions from 'replace' operations
+    Type: Integer (≥ 0)
+    Example: "Password" → "Password!!!"
+             Added: "!!!" = 3 characters
+             L1_chars_added = 3
+
+L1_chars_deleted
+    Definition: Total characters removed from the password
+    Algorithm: Sum of all 'delete' operations from SequenceMatcher
+               + net deletions from 'replace' operations
+    Type: Integer (≥ 0)
+    Example: "Password123" → "Password"
+             Deleted: "123" = 3 characters
+             L1_chars_deleted = 3
+
+L1_chars_substituted
+    Definition: Characters replaced with different characters
+    Algorithm: For each 'replace' operation: min(deleted, added)
+               E.g., replacing "abc" with "xy" counts as 2 substitutions
+                     (plus 1 deletion)
+    Type: Integer (≥ 0)
+    Example: "Password" → "P@ssw0rd"
+             'a' → '@', 'o' → '0' = 2 substitutions
+             L1_chars_substituted = 2
+
+L1_chars_unchanged
+    Definition: Characters that remain identical and in the same position
+    Algorithm: Sum of all 'equal' operations from SequenceMatcher
+    Type: Integer (≥ 0)
+    Example: "Password" → "P@ssw0rd"
+             'P', 's', 's', 'w', 'r', 'd' unchanged = 6
+             L1_chars_unchanged = 6
+
+---
+DOMINANT OPERATION CLASSIFICATION
+---
+
+L1_dominant_operation
+    Definition: Which type of edit operation is most prevalent
+    Type: Categorical string
+    Values:
+        'none' - No changes made (original == modified)
+        'additive' - chars_added > chars_deleted AND chars_added > chars_substituted
+        'subtractive' - chars_deleted > chars_added AND chars_deleted > chars_substituted
+        'substitutive' - chars_substituted > chars_added AND chars_substituted > chars_deleted
+        'mixed' - No single operation type dominates (ties or complex patterns)
+
+    Example: "Password" → "Password!!!"
+             Added=3, Deleted=0, Substituted=0 → 'additive'
+
+    Example: "Password123" → "P@ssw0rd"
+             Added=0, Deleted=3, Substituted=2 → 'subtractive'
+
+
+================================================================================
+LEVEL 2: SEMANTIC OPERATIONS (15 features)
+================================================================================
+
+These features focus on security-relevant pattern transformations. They detect
+whether specific weak patterns were broken or strong patterns were added.
+
+---
+PATTERN DETECTION (used internally)
+---
+
+The code first detects patterns in both original and modified passwords using
+regex matching:
+
+has_word
+    Pattern: 4+ consecutive letters [a-zA-Z]{4,}
+    Example: "Password" contains "Password" → True
+
+has_special
+    Pattern: Any of !@#$%^&*()_+-=[]{};:'",.<>?/\|`~
+    Example: "Pass@123" contains "@" → True
+
+has_numbers
+    Pattern: Any digit \d
+    Example: "Pass123" contains "123" → True
+
+has_repeat
+    Pattern: 3+ consecutive identical characters (.)\1{2,}
+    Example: "Passsss" contains "sssss" → True
+    Example: "Password" → False (no character repeats 3+ times)
+
+has_sequence
+    Pattern: Common sequences (case-insensitive):
+             abc, bcd, cde, def, 123, 234, 345, 456, 567, 678, 789
+    Example: "Pass123" contains "123" → True
+
+has_keyboard_walk
+    Pattern: Common keyboard patterns (case-insensitive):
+             qwerty, asdf, zxcv, 1234, qaz, wsx
+    Example: "qwerty123" contains "qwerty" → True
+
+has_leetspeak
+    Pattern: Mixed letters+numbers with leet characters (0,1,3,4,5,7,8)
+             OR specific leet patterns like [a@][3e] (e.g., "@3" for "ae")
+    Example: "P@ssw0rd" has mixed alphanum + leet chars → True
+    Example: "Password" → False
+
+---
+SUBTRACTIVE OPERATIONS (Pattern Breaking)
+---
+
+L2_broke_word
+    Definition: Original had 4+ letter word, modified does not
+    Type: Boolean
+    Formula: (original has_word=True) AND (modified has_word=False)
+    Example: "Password" → "P@ss" breaks the word
+             L2_broke_word = True
+
+L2_broke_repeat
+    Definition: Original had 3+ repeated chars, modified does not
+    Type: Boolean
+    Example: "Passsword" → "Password" breaks the repeat
+             L2_broke_repeat = True
+
+L2_broke_sequence
+    Definition: Original had sequence (123, abc, etc.), modified does not
+    Type: Boolean
+    Example: "Pass123" → "Pass1x3" breaks the sequence
+             L2_broke_sequence = True
+
+L2_broke_keyboard_walk
+    Definition: Original had keyboard walk, modified does not
+    Type: Boolean
+    Example: "qwerty123" → "qxerty123" breaks the walk
+             L2_broke_keyboard_walk = True
+
+---
+ADDITIVE OPERATIONS (Complexity Addition)
+---
+
+L2_added_special
+    Definition: Original had NO special chars, modified has special chars
+    Type: Boolean
+    Formula: (original has_special=False) AND (modified has_special=True)
+    Example: "Password" → "Password!" adds special char
+             L2_added_special = True
+    Note: Does NOT trigger if original already had special chars
+
+L2_added_numbers
+    Definition: Original had NO numbers, modified has numbers
+    Type: Boolean
+    Example: "Password" → "Password1" adds numbers
+             L2_added_numbers = True
+
+L2_added_leetspeak
+    Definition: Original had NO leetspeak, modified has leetspeak
+    Type: Boolean
+    Example: "Password" → "P@ssw0rd" adds leetspeak
+             L2_added_leetspeak = True
+
+L2_added_word
+    Definition: Original had NO 4+ letter word, modified has one
+    Type: Boolean
+    Example: "P@ss" → "P@ssword" adds word
+             L2_added_word = True
+
+---
+CHARACTER COUNT DELTAS
+---
+
+L2_special_char_delta
+    Definition: Change in count of special characters
+    Type: Integer (can be negative)
+    Formula: count_special(modified) - count_special(original)
+    Regex: [!@#$%^&*()_+-=[]{};:'",.<>?/\|`~]
+    Example: "Password" → "Password!!!"
+             0 → 3 special chars, delta = +3
+
+L2_number_delta
+    Definition: Change in count of numeric digits
+    Type: Integer (can be negative)
+    Formula: count_numbers(modified) - count_numbers(original)
+    Example: "Password123" → "Password"
+             3 → 0 numbers, delta = -3
+
+---
+OTHER TRANSFORMATIONS
+---
+
+L2_case_changes
+    Definition: Total change in uppercase and lowercase letter counts
+    Type: Integer (≥ 0)
+    Formula: |orig_upper - mod_upper| + |orig_lower - mod_lower|
+    Example: "Password" → "PASSWORD"
+             orig: 1 upper, 7 lower
+             mod: 8 upper, 0 lower
+             delta = |1-8| + |7-0| = 7 + 7 = 14 case changes
+
+L2_likely_reordered
+    Definition: Same character set but different order (anagram)
+    Type: Boolean
+    Formula: (sorted(original.lower()) == sorted(modified.lower())) AND
+             (original.lower() != modified.lower())
+    Example: "Password" → "drowssaP"
+             Same letters, different order → True
+    Example: "Password" → "Password123"
+             Different character set → False
+
+---
+SUMMARY COUNTS
+---
+
+L2_subtractive_ops_count
+    Definition: Number of patterns broken
+    Type: Integer (0-4)
+    Formula: sum([broke_word, broke_repeat, broke_sequence, broke_keyboard_walk])
+    Example: If broke_word=True and broke_sequence=True, count = 2
+
+L2_additive_ops_count
+    Definition: Number of complexity patterns added
+    Type: Integer (0-4)
+    Formula: sum([added_special, added_numbers, added_leetspeak, added_word])
+    Example: If added_special=True and added_numbers=True, count = 2
+
+L2_operation_bias
+    Definition: Overall tendency toward addition or subtraction
+    Type: Categorical string
+    Values:
+        'subtractive' - subtractive_ops_count > additive_ops_count
+        'additive' - additive_ops_count > subtractive_ops_count
+        'mixed' - Both counts > 0 and equal
+        'neutral' - Both counts = 0
+    Example: broke 2 patterns, added 1 pattern → 'subtractive'
+
+
+================================================================================
+LEVEL 3: STRATEGY CLASSIFICATION (13 features)
+================================================================================
+
+These features identify high-level editing strategies using template matching.
+Multiple strategies can apply to a single edit.
+
+---
+STRATEGY DETECTION RULES
+---
+
+The code checks for strategies in this order using specific heuristics:
+
+no_change
+    Rule: original == modified (identical strings)
+    Example: "Password" → "Password"
+
+complete_rewrite
+    Rule: L1_similarity_ratio < 0.3
+    Interpretation: Less than 30% similarity = essentially new password
+    Example: "Password" → "MyNewP@ss2024"
+             Very low similarity → complete_rewrite
+
+append_suffix
+    Rule: modified.startswith(original) AND len(modified) > len(original)
+    Interpretation: Original password kept intact, characters added at end
+    Example: "Password" → "Password123"
+    Example: "Password" → "Password!!!"
+    Note: Exact string match required from start
+
+prepend_prefix
+    Rule: modified.endswith(original) AND len(modified) > len(original)
+    Interpretation: Original password kept intact, characters added at start
+    Example: "Password" → "123Password"
+    Note: Less common in practice
+
+insert_middle
+    Rule: modified longer than original AND
+          all characters of original appear in order in modified AND
+          NOT append_suffix AND NOT prepend_prefix
+    Algorithm: Greedy subsequence matching
+    Example: "Password" → "Pass123word"
+             "Password" found as subsequence with insertion in middle
+    Example: "Password" → "P@ssw0rd"
+             Character substitutions prevent this (not pure insertion)
+
+leetspeak_substitution
+    Rule: L2_added_leetspeak=True OR
+          (chars_substituted ≥ 2 AND similarity_ratio > 0.6 AND number_delta > 0)
+    Interpretation: Character-to-number/symbol replacements
+    Example: "Password" → "P@ssw0rd"
+             'a'→'@', 'o'→'0' = leetspeak
+
+targeted_deletion
+    Rule: L1_dominant_operation='subtractive' AND chars_deleted ≥ 2
+    Interpretation: Primary edit is removing characters
+    Example: "Password123" → "Password"
+    Example: "Pa$$word!!!" → "Password"
+
+word_addition
+    Rule: L2_added_word=True AND len_change ≥ 3
+    Interpretation: Added a new word (4+ letters) to password
+    Example: "P@ss" → "P@ssMyWord"
+
+scramble_reorder
+    Rule: L2_likely_reordered=True
+    Interpretation: Same characters, different arrangement (anagram)
+    Example: "Password" → "drowssaP"
+    Note: Rare in practice for passwords
+
+minimal_change
+    Rule: edit_distance ≤ 3 AND similarity_ratio > 0.7 AND
+          no other strategies detected
+    Interpretation: Small, minor tweaks
+    Example: "Password" → "Passwort" (1 char different)
+
+case_modification
+    Rule: case_changes ≥ 2 AND edit_distance ≤ 5
+    Interpretation: Primarily changing capitalization
+    Example: "Password" → "PASSWORD"
+    Example: "password" → "PaSsWoRd"
+
+hybrid_operations
+    Rule: chars_added > 0 AND chars_deleted > 0 AND chars_substituted > 0
+    Interpretation: Combination of insertion, deletion, and substitution
+    Example: "Password123" → "P@ssw0rd!!"
+             Deleted "123", substituted "a"→"@", added "!!"
+
+other
+    Rule: None of the above strategies matched
+    Interpretation: Catch-all for unclassifiable edits
+
+---
+STRATEGY FEATURES
+---
+
+L3_primary_strategy
+    Definition: The FIRST strategy that matched in the detection order
+    Type: Categorical string
+    Values: Any of the 12 strategies listed above
+    Example: "Password" → "Password123"
+             Matches append_suffix first → 'append_suffix'
+    Note: Order matters - append_suffix is checked before insert_middle
+
+L3_strategy_count
+    Definition: Number of strategies that matched
+    Type: Integer (≥ 1)
+    Example: "Password123" → "P@ss!!"
+             May match: targeted_deletion, leetspeak_substitution, hybrid_operations
+             Count = 3
+
+L3_strategies
+    Definition: Comma-separated list of ALL matching strategies
+    Type: String
+    Example: "Password123" → "P@ss!!"
+             L3_strategies = "targeted_deletion,leetspeak_substitution,hybrid_operations"
+
+---
+STRATEGY FLAGS (Boolean indicators)
+---
+
+L3_is_append
+    Definition: 'append_suffix' in list of strategies
+    Type: Boolean
+
+L3_is_prepend
+    Definition: 'prepend_prefix' in list of strategies
+    Type: Boolean
+
+L3_is_insert
+    Definition: 'insert_middle' in list of strategies
+    Type: Boolean
+
+L3_is_leetspeak
+    Definition: 'leetspeak_substitution' in list of strategies
+    Type: Boolean
+
+L3_is_deletion
+    Definition: 'targeted_deletion' in list of strategies
+    Type: Boolean
+
+L3_is_word_addition
+    Definition: 'word_addition' in list of strategies
+    Type: Boolean
+
+L3_is_reorder
+    Definition: 'scramble_reorder' in list of strategies
+    Type: Boolean
+
+L3_is_rewrite
+    Definition: 'complete_rewrite' in list of strategies
+    Type: Boolean
+
+L3_is_minimal
+    Definition: 'minimal_change' in list of strategies
+    Type: Boolean
+
+L3_is_hybrid
+    Definition: 'hybrid_operations' in list of strategies
+    Type: Boolean
+
+
+================================================================================
+SECURITY METRICS (3 features)
+================================================================================
+
+These use pre-computed zxcvbn scores from the dataset.
+
+security_score
+    Definition: zxcvbn_score from dataset (for modified password)
+    Type: Integer (0-4)
+    Source: zxcvbn library's security rating
+    Values: 0=very weak, 1=weak, 2=fair, 3=strong, 4=very strong
+
+security_guesses_log10
+    Definition: zxcvbn_guesses_log10 from dataset
+    Type: Float
+    Interpretation: log10(estimated guesses to crack password)
+    Example: 8.0 means 10^8 = 100 million guesses
+             Higher = more secure
+
+security_num_patterns
+    Definition: zxcvbn_num_patterns from dataset
+    Type: Integer
+    Interpretation: Number of patterns zxcvbn detected in password
+    Example: "Password123" might have 2 patterns (dictionary + sequence)
+             Fewer patterns = better security
+
+
+================================================================================
+MEMORY COST METRICS (4 features)
+================================================================================
+
+These estimate cognitive difficulty of remembering the edited password.
+
+memory_edit_complexity
+    Definition: Normalized edit distance
+    Type: Float (0.0 to 1.0)
+    Formula: edit_distance / max(len(original), len(modified))
+    Interpretation: 0.0 = identical (easy to remember)
+                   1.0 = completely different (hard to remember)
+    Example: "Password" → "P@ssw0rd"
+             edit_distance=2, max_len=8
+             complexity = 2/8 = 0.25
+
+memory_dissimilarity
+    Definition: Inverse of similarity ratio
+    Type: Float (0.0 to 1.0)
+    Formula: 1 - similarity_ratio
+    Interpretation: 0.0 = identical
+                   1.0 = completely different
+                   Higher = harder to remember
+
+memory_length_penalty
+    Definition: Normalized password length
+    Type: Float (0.0 to 1.0)
+    Formula: min(len(modified) / 20.0, 1.0)
+    Interpretation: Capped at 20 characters
+                   Longer passwords harder to remember
+    Example: 10 chars → 0.5
+             20+ chars → 1.0
+
+memory_cost_estimate
+    Definition: Weighted combination of memory factors
+    Type: Float (0.0 to 1.0)
+    Formula: 0.4 * edit_complexity +
+             0.4 * dissimilarity +
+             0.2 * length_penalty
+    Interpretation: Overall difficulty remembering the edit
+                   0.0 = very easy (no change)
+                   1.0 = very hard (long, complex change)
+    Example: Small change to short password → 0.2
+             Complete rewrite of long password → 0.9
+
+
+================================================================================
+NOTES AND LIMITATIONS
+================================================================================
+
+1. Pattern Detection Limitations:
+   - has_word only detects 4+ letters (misses short words like "cat")
+   - has_sequence only checks common sequences (misses "efg", "890", etc.)
+   - has_keyboard_walk only checks 6 patterns (misses "jkl", "vbn", etc.)
+   - has_leetspeak uses heuristics (may miss creative substitutions)
+
+2. Strategy Classification Ambiguity:
+   - Multiple strategies can match the same edit
+   - Order of checking determines primary_strategy
+   - "other" is catch-all for edge cases
+
+3. Memory Cost Assumptions:
+   - Weights (0.4, 0.4, 0.2) are arbitrary design choices
+   - Does not account for semantic memorability (e.g., meaningful words)
+   - Does not account for individual differences
+
+4. Security Metrics:
+   - security_* features are from zxcvbn, not calculated by this code
+   - Assumes zxcvbn data is available and correct
+   - Missing values are filled with mean/NaN
+
+5. Edge Cases Handled:
+   - Empty strings return default/zero values
+   - Identical passwords are detected early (no_change strategy)
+   - Character counts can never be negative (except deltas)
